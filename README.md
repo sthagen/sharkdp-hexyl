@@ -1,6 +1,6 @@
 ![](doc/logo.svg)
 
-[![Build Status](https://travis-ci.org/sharkdp/hexyl.svg?branch=master)](https://travis-ci.org/sharkdp/hexyl)
+[![CICD](https://github.com/sharkdp/hexyl/actions/workflows/CICD.yml/badge.svg)](https://github.com/sharkdp/hexyl/actions/workflows/CICD.yml)
 [![](https://img.shields.io/crates/l/hexyl.svg?colorB=22ba4c)](https://crates.io/crates/hexyl)
 ![](https://img.shields.io/crates/v/hexyl.svg?colorB=00aa88)
 
@@ -31,7 +31,7 @@ If you use an older version of Ubuntu, you can download
 the latest `.deb` package from the release page and install it via:
 
 ``` bash
-sudo dpkg -i hexyl_0.8.0_amd64.deb  # adapt version number and architecture
+sudo dpkg -i hexyl_0.9.0_amd64.deb  # adapt version number and architecture
 ```
 
 ### On Debian
@@ -57,10 +57,28 @@ pacman -S hexyl
 xbps-install hexyl
 ```
 
+### On Gentoo Linux
+
+Available in [dm9pZCAq overlay](https://github.com/gentoo-mirror/dm9pZCAq)
+
+```
+sudo eselect repository enable dm9pZCAq
+sudo emerge --sync dm9pZCAq
+sudo emerge sys-apps/hexyl::dm9pZCAq
+```
+
 ### On macOS
+
+Via [Homebrew](https://brew.sh):
 
 ```
 brew install hexyl
+```
+
+...or via [MacPorts](https://www.macports.org):
+
+```
+sudo port install hexyl
 ```
 
 ### On FreeBSD
@@ -69,11 +87,28 @@ brew install hexyl
 pkg install hexyl
 ```
 
+### on Termux
+```
+pkg install hexyl
+```
+or 
+```
+apt install hexyl
+```
+
 ### Via Nix
 
 ```
 nix-env -i hexyl
 ```
+
+### Via Guix
+
+```
+guix package -i hexyl
+```
+
+Or add the `hexyl` package in the list of packages to be installed in your system configuration (e.g., `/etc/config.scm`).
 
 ### On other distributions
 
@@ -87,10 +122,18 @@ or Windows Terminal since Windows 10 1903).
 
 ### Via cargo
 
-If you have Rust 1.36 or higher, you can install `hexyl` from source via `cargo`:
+If you have Rust 1.40 or higher, you can install `hexyl` from source via `cargo`:
 ```
 cargo install hexyl
 ```
+
+### Via snap package
+
+```
+sudo snap install hexyl
+```
+
+[Get it from the Snap Store](https://snapcraft.io/hexyl)
 
 ## License
 

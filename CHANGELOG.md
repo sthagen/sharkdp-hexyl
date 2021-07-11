@@ -1,3 +1,48 @@
+# unreleased
+
+## Changes
+
+
+## Features
+
+
+## Bugfixes
+
+
+## Other
+
+
+## Packaging
+
+
+
+
+# v0.9.0
+
+## Changes
+
+- Breaking change (binary): setting the `-o/--display-offset` flag no longer overrides the value set by `--skip` [#115](https://github.com/sharkdp/hexyl/issues/115). The first displayed address is now the sum of the two values - this matches the behaviour of `xxd`.
+
+## Features
+
+- Allow relative and negative byte offsets (e.g. `hexyl --skip=-1block`), see #99 (@ErichDonGubler)
+- Added `-l` as another alias for '-n/--length' (`xxd` compatibility), see #121 and #135 (@TheDoctor314)
+
+## Bugfixes
+
+- Argument `--length` silently takes precedence over `--bytes`, see #105
+- Print warning on empty content, see #107 and #108
+- Disallow block sizes of zero, see #110
+- Fix newline appearing in `--version` output, see #131 and #133 (@scimas)
+
+## Other
+
+- Better diagnostic messages, see #98 (@ErichDonGubler)
+
+## Packaging
+
+- `hexyl` is now available on snapstore, see #116 (@purveshpatel511)
+
 # v0.8.0
 
 ## Features

@@ -36,7 +36,8 @@ fn run() -> Result<(), AnyhowError> {
                 .value_name("N")
                 .help(
                     "Only read N bytes from the input. The N argument can also include a \
-                     unit with a decimal prefix (kB, MB, ..) or binary prefix (kiB, MiB, ..).\n\
+                     unit with a decimal prefix (kB, MB, ..) or binary prefix (kiB, MiB, ..). \
+                     The short option '-l' can be used as an alias.\n\
                      Examples: --length=64, --length=4KiB",
                 ),
         )
@@ -46,7 +47,16 @@ fn run() -> Result<(), AnyhowError> {
                 .long("bytes")
                 .takes_value(true)
                 .value_name("N")
+                .conflicts_with("length")
                 .help("An alias for -n/--length"),
+        )
+        .arg(
+            Arg::with_name("count")
+                .short("l")
+                .takes_value(true)
+                .value_name("N")
+                .hidden(true)
+                .help("Yet another alias for -n/--length"),
         )
         .arg(
             Arg::with_name("skip")
@@ -56,7 +66,8 @@ fn run() -> Result<(), AnyhowError> {
                 .value_name("N")
                 .help(
                     "Skip the first N bytes of the input. The N argument can also include \
-                     a unit (see `--length` for details)",
+                     a unit (see `--length` for details)\n\
+                     A negative value is valid and will seek from the end of the file.",
                 ),
         )
         .arg(
@@ -111,7 +122,9 @@ fn run() -> Result<(), AnyhowError> {
                 .value_name("N")
                 .help(
                     "Add N bytes to the displayed file position. The N argument can also \
-                    include a unit (see `--length` for details)",
+                    include a unit (see `--length` for details)\n\
+                    A negative value is valid and calculates an offset relative to the \
+                    end of the file.",
                 ),
         );
 
@@ -127,16 +140,9 @@ fn run() -> Result<(), AnyhowError> {
     let block_size = matches
         .value_of("block_size")
         .map(|bs| {
-            bs.parse::<i64>()
-                .map_err(|e| anyhow!(e))
-                .and_then(|x| {
-                    PositiveI64::new(x)
-                        .ok_or_else(|| anyhow!("negative block sizes don't make sense"))
-                })
-                .context(anyhow!(
-                    "failed to parse `--block-size` arg {:?} as positive integer",
-                    bs
-                ))
+            bs.parse::<i64>().map_err(|e| anyhow!(e)).and_then(|x| {
+                PositiveI64::new(x).ok_or_else(|| anyhow!("block size argument must be positive"))
+            })
         })
         .transpose()?
         .unwrap_or_else(|| PositiveI64::new(512).unwrap());
@@ -144,29 +150,52 @@ fn run() -> Result<(), AnyhowError> {
     let skip_arg = matches
         .value_of("skip")
         .map(|s| {
-            parse_byte_count(s, block_size).context(anyhow!(
+            parse_byte_offset(s, block_size).context(anyhow!(
                 "failed to parse `--skip` arg {:?} as byte count",
                 s
             ))
         })
         .transpose()?;
 
-    if let Some(skip) = skip_arg {
-        reader.seek(SeekFrom::Current(skip.into_inner()))?;
-    }
+    let skip_offset = if let Some(ByteOffset { kind, value }) = skip_arg {
+        let value = value.into_inner();
+        reader
+            .seek(match kind {
+                ByteOffsetKind::ForwardFromBeginning | ByteOffsetKind::ForwardFromLastOffset => {
+                    SeekFrom::Current(value)
+                }
+                ByteOffsetKind::BackwardFromEnd => SeekFrom::End(value.checked_neg().unwrap()),
+            })
+            .map_err(|_| {
+                anyhow!(
+                    "Failed to jump to the desired input position. \
+                     This could be caused by a negative offset that is too large or by \
+                     an input that is not seek-able (e.g. if the input comes from a pipe)."
+                )
+            })?
+    } else {
+        0
+    };
+
+    let parse_byte_count = |s| -> Result<u64, AnyhowError> {
+        Ok(parse_byte_offset(s, block_size)?
+            .assume_forward_offset_from_start()?
+            .into())
+    };
 
     let mut reader = if let Some(length) = matches
         .value_of("length")
         .or_else(|| matches.value_of("bytes"))
+        .or_else(|| matches.value_of("count"))
         .map(|s| {
-            parse_byte_count(s, block_size).context(anyhow!(
+            parse_byte_count(s).context(anyhow!(
                 "failed to parse `--length` arg {:?} as byte count",
                 s
             ))
         })
         .transpose()?
     {
-        Box::new(reader.take(length.into()))
+        Box::new(reader.take(length))
     } else {
         reader.into_inner()
     };
@@ -185,24 +214,23 @@ fn run() -> Result<(), AnyhowError> {
 
     let squeeze = !matches.is_present("nosqueezing");
 
-    let display_offset = matches
+    let display_offset: u64 = matches
         .value_of("display_offset")
         .map(|s| {
-            parse_byte_count(s, block_size).context(anyhow!(
+            parse_byte_count(s).context(anyhow!(
                 "failed to parse `--display-offset` arg {:?} as byte count",
                 s
             ))
         })
         .transpose()?
-        .or(skip_arg)
-        .unwrap_or_default()
+        .unwrap_or(0)
         .into();
 
     let stdout = io::stdout();
     let mut stdout_lock = stdout.lock();
 
     let mut printer = Printer::new(&mut stdout_lock, show_color, border_style, squeeze);
-    printer.display_offset(display_offset);
+    printer.display_offset(skip_offset + display_offset);
     printer.print_all(&mut reader).map_err(|e| anyhow!(e))?;
 
     Ok(())
@@ -217,11 +245,16 @@ fn main() {
 
     if let Err(err) = result {
         if let Some(clap_err) = err.downcast_ref::<clap::Error>() {
-            eprint!("{}", clap_err); // Clap errors already have newlines
-
             match clap_err.kind {
                 // The exit code should not indicate an error for --help / --version
-                clap::ErrorKind::HelpDisplayed | clap::ErrorKind::VersionDisplayed => {
+                clap::ErrorKind::HelpDisplayed => {
+                    eprint!("{}", clap_err); // Clap errors already have newlines
+                    std::process::exit(0)
+                }
+                clap::ErrorKind::VersionDisplayed => {
+                    // Version output in clap 2.33.1 (dep as of now) doesn't have a newline
+                    // and the fix is not included even in the latest stable release
+                    println!("");
                     std::process::exit(0)
                 }
                 _ => (),
@@ -234,11 +267,35 @@ fn main() {
 }
 
 #[derive(Clone, Copy, Debug, Default, Hash, Eq, Ord, PartialEq, PartialOrd)]
+pub struct NonNegativeI64(i64);
+
+impl NonNegativeI64 {
+    pub fn new(x: i64) -> Option<Self> {
+        if x.is_negative() {
+            None
+        } else {
+            Some(Self(x))
+        }
+    }
+
+    pub fn into_inner(self) -> i64 {
+        self.0
+    }
+}
+
+impl Into<u64> for NonNegativeI64 {
+    fn into(self) -> u64 {
+        u64::try_from(self.0)
+            .expect("invariant broken: NonNegativeI64 should contain a non-negative i64 value")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PositiveI64(i64);
 
 impl PositiveI64 {
     pub fn new(x: i64) -> Option<Self> {
-        if x.is_negative() {
+        if x < 1 {
             None
         } else {
             Some(Self(x))
@@ -259,14 +316,45 @@ impl Into<u64> for PositiveI64 {
 
 const HEX_PREFIX: &str = "0x";
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum ByteOffsetKind {
+    ForwardFromBeginning,
+    ForwardFromLastOffset,
+    BackwardFromEnd,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct ByteOffset {
+    value: NonNegativeI64,
+    kind: ByteOffsetKind,
+}
+
+#[derive(Clone, Debug, ThisError)]
+#[error(
+    "negative offset specified, but only positive offsets (counts) are accepted in this context"
+)]
+struct NegativeOffsetSpecifiedError;
+
+impl ByteOffset {
+    fn assume_forward_offset_from_start(
+        &self,
+    ) -> Result<NonNegativeI64, NegativeOffsetSpecifiedError> {
+        let &Self { value, kind } = self;
+        match kind {
+            ByteOffsetKind::ForwardFromBeginning | ByteOffsetKind::ForwardFromLastOffset => {
+                Ok(value)
+            }
+            ByteOffsetKind::BackwardFromEnd => Err(NegativeOffsetSpecifiedError),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, ThisError)]
-enum ByteCountParseError {
+enum ByteOffsetParseError {
     #[error("no character data found, did you forget to write it?")]
     Empty,
     #[error("no digits found after sign, did you forget to write them?")]
     EmptyAfterSign,
-    #[error("negative byte offsets are not accepted (yet)")]
-    Negative,
     #[error(
         "found {0:?} sign after hex prefix ({:?}); signs should go before it",
         HEX_PREFIX
@@ -284,22 +372,35 @@ enum ByteCountParseError {
     UnitMultiplicationOverflow,
 }
 
-fn parse_byte_count(n: &str, block_size: PositiveI64) -> Result<PositiveI64, ByteCountParseError> {
-    use ByteCountParseError::*;
+fn parse_byte_offset(n: &str, block_size: PositiveI64) -> Result<ByteOffset, ByteOffsetParseError> {
+    use ByteOffsetParseError::*;
 
-    let n = {
+    let (n, kind) = {
         let mut chars = n.chars();
-        match chars.next() {
-            Some('+') => {
-                if chars.clone().next().is_none() {
-                    return Err(EmptyAfterSign);
-                }
-                chars.as_str()
+        let next_char = chars.next();
+        let check_empty_after_sign = || {
+            if chars.clone().next().is_none() {
+                Err(EmptyAfterSign)
+            } else {
+                Ok(chars.as_str())
             }
-            Some('-') => return Err(Negative),
+        };
+        match next_char {
+            Some('+') => (
+                check_empty_after_sign()?,
+                ByteOffsetKind::ForwardFromLastOffset,
+            ),
+            Some('-') => (check_empty_after_sign()?, ByteOffsetKind::BackwardFromEnd),
             None => return Err(Empty),
-            _ => n,
+            _ => (n, ByteOffsetKind::ForwardFromBeginning),
         }
+    };
+
+    let into_byte_offset = |value| {
+        Ok(ByteOffset {
+            value: NonNegativeI64::new(value).unwrap(),
+            kind,
+        })
     };
 
     if n.starts_with(HEX_PREFIX) {
@@ -316,7 +417,7 @@ fn parse_byte_count(n: &str, block_size: PositiveI64) -> Result<PositiveI64, Byt
             _ => (),
         }
         return i64::from_str_radix(n, 16)
-            .map(|x| Ok(PositiveI64::new(x).unwrap()))
+            .map(into_byte_offset)
             .map_err(ParseNum)?;
     }
 
@@ -355,7 +456,7 @@ fn parse_byte_count(n: &str, block_size: PositiveI64) -> Result<PositiveI64, Byt
         (Ok(num), Ok((_raw_unit, unit_multiplier))) => num
             .checked_mul(unit_multiplier)
             .ok_or_else(|| UnitMultiplicationOverflow)
-            .and_then(|x| PositiveI64::new(x).ok_or(Negative)),
+            .and_then(into_byte_offset),
         (Ok(_), Err(e)) => Err(e),
         (Err(e), Ok((raw_unit, _unit_multiplier))) => match raw_unit {
             Some(raw_unit) if num.is_empty() => Err(EmptyWithUnit(raw_unit.to_owned())),
@@ -366,17 +467,22 @@ fn parse_byte_count(n: &str, block_size: PositiveI64) -> Result<PositiveI64, Byt
 }
 
 #[test]
-fn test_parse_byte_count() {
-    use ByteCountParseError::*;
+fn test_parse_byte_offset() {
+    use ByteOffsetParseError::*;
 
     macro_rules! success {
-        ($input: expr, $expected: expr) => {
-            success!($input, 512, $expected)
+        ($input: expr, $expected_kind: ident $expected_value: expr) => {
+            success!($input, $expected_kind $expected_value; block_size: 512)
         };
-        ($input: expr, $block_size: expr, $expected: expr) => {
+        ($input: expr, $expected_kind: ident $expected_value: expr; block_size: $block_size: expr) => {
             assert_eq!(
-                parse_byte_count($input, PositiveI64::new($block_size).unwrap()),
-                Ok(PositiveI64::new($expected).unwrap()),
+                parse_byte_offset($input, PositiveI64::new($block_size).unwrap()),
+                Ok(
+                    ByteOffset {
+                        value: NonNegativeI64::new($expected_value).unwrap(),
+                        kind: ByteOffsetKind::$expected_kind,
+                    }
+                ),
             );
         };
     }
@@ -384,46 +490,46 @@ fn test_parse_byte_count() {
     macro_rules! error {
         ($input: expr, $expected_err: expr) => {
             assert_eq!(
-                parse_byte_count($input, PositiveI64::new(512).unwrap()),
+                parse_byte_offset($input, PositiveI64::new(512).unwrap()),
                 Err($expected_err),
             );
         };
     }
 
-    success!("0", 0);
-    success!("1", 1);
-    success!("1", 1);
-    success!("100", 100);
-    success!("+100", 100);
+    success!("0", ForwardFromBeginning 0);
+    success!("1", ForwardFromBeginning 1);
+    success!("1", ForwardFromBeginning 1);
+    success!("100", ForwardFromBeginning 100);
+    success!("+100", ForwardFromLastOffset 100);
 
-    success!("0x0", 0);
-    success!("0xf", 15);
-    success!("0xdeadbeef", 3_735_928_559);
+    success!("0x0", ForwardFromBeginning 0);
+    success!("0xf", ForwardFromBeginning 15);
+    success!("0xdeadbeef", ForwardFromBeginning 3_735_928_559);
 
-    success!("1KB", 1000);
-    success!("2MB", 2000000);
-    success!("3GB", 3000000000);
-    success!("4TB", 4000000000000);
-    success!("+4TB", 4000000000000);
+    success!("1KB", ForwardFromBeginning 1000);
+    success!("2MB", ForwardFromBeginning 2000000);
+    success!("3GB", ForwardFromBeginning 3000000000);
+    success!("4TB", ForwardFromBeginning 4000000000000);
+    success!("+4TB", ForwardFromLastOffset 4000000000000);
 
-    success!("1GiB", 1073741824);
-    success!("2TiB", 2199023255552);
-    success!("+2TiB", 2199023255552);
+    success!("1GiB", ForwardFromBeginning 1073741824);
+    success!("2TiB", ForwardFromBeginning 2199023255552);
+    success!("+2TiB", ForwardFromLastOffset 2199023255552);
 
-    success!("0xff", 255);
-    success!("0xEE", 238);
-    success!("+0xFF", 255);
+    success!("0xff", ForwardFromBeginning 255);
+    success!("0xEE", ForwardFromBeginning 238);
+    success!("+0xFF", ForwardFromLastOffset 255);
 
-    success!("1block", 512, 512);
-    success!("2block", 512, 1024);
-    success!("1block", 4, 4);
-    success!("2block", 4, 8);
+    success!("1block", ForwardFromBeginning 512; block_size: 512);
+    success!("2block", ForwardFromBeginning 1024; block_size: 512);
+    success!("1block", ForwardFromBeginning 4; block_size: 4);
+    success!("2block", ForwardFromBeginning 8; block_size: 4);
 
     // empty string is invalid
     error!("", Empty);
     // These are also bad.
     error!("+", EmptyAfterSign);
-    error!("-", Negative);
+    error!("-", EmptyAfterSign);
     error!("K", InvalidNumAndUnit("K".to_owned()));
     error!("k", InvalidNumAndUnit("k".to_owned()));
     error!("m", InvalidNumAndUnit("m".to_owned()));
@@ -431,9 +537,7 @@ fn test_parse_byte_count() {
     // leading/trailing space is invalid
     error!(" 0", InvalidNumAndUnit(" 0".to_owned()));
     error!("0 ", InvalidUnit(" ".to_owned()));
-    // Negatives make no sense for byte counts
-    error!("-1", Negative);
-    error!("-0x-12", Negative);
+    // Signs after the hex prefix make no sense
     error!("0x-12", SignFoundAfterHexPrefix('-'));
     // This was previously accepted but shouldn't be.
     error!("0x+12", SignFoundAfterHexPrefix('+'));
@@ -445,10 +549,12 @@ fn test_parse_byte_count() {
     // multiplication overflows u64
     error!("20000000TiB", UnitMultiplicationOverflow);
 
-    assert!(match parse_byte_count("99999999999999999999", PositiveI64::new(512).unwrap()) {
-        // We can't check against the kind of the `ParseIntError`, so we'll just make sure it's the
-        // same as trying to do the parse directly.
-        Err(ParseNum(e)) => e == "99999999999999999999".parse::<i64>().unwrap_err(),
-        _ => false,
-    });
+    assert!(
+        match parse_byte_offset("99999999999999999999", PositiveI64::new(512).unwrap()) {
+            // We can't check against the kind of the `ParseIntError`, so we'll just make sure it's the
+            // same as trying to do the parse directly.
+            Err(ParseNum(e)) => e == "99999999999999999999".parse::<i64>().unwrap_err(),
+            _ => false,
+        }
+    );
 }
