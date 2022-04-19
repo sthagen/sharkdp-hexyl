@@ -1,7 +1,7 @@
 name: CICD
 
 env:
-  MIN_SUPPORTED_RUST_VERSION: "1.40.0"
+  MIN_SUPPORTED_RUST_VERSION: "1.46.0"
   CICD_INTERMEDIATES_DIR: "_cicd-intermediates"
 
 on:
@@ -27,11 +27,25 @@ jobs:
         toolchain: ${{ env.MIN_SUPPORTED_RUST_VERSION }}
         default: true
         profile: minimal # minimal component installation (ie, no documentation)
+        components: clippy, rustfmt
+
+    - name: Ensure `cargo fmt` has been run
+      uses: actions-rs/cargo@v1
+      with:
+        command: fmt
+        args: -- --check
+
+    - name: Run clippy (on minimum supported rust version to prevent warnings we can't fix)
+      uses: actions-rs/cargo@v1
+      with:
+        command: clippy
+        args: --locked --all-targets
 
     - name: Run tests
       uses: actions-rs/cargo@v1
       with:
         command: test
+        args: --locked
 
   build:
     name: ${{ matrix.job.os }} (${{ matrix.job.target }})
@@ -155,6 +169,12 @@ jobs:
         command: test
         args: --target=${{ matrix.job.target }} ${{ steps.test-options.outputs.CARGO_TEST_OPTIONS}}
 
+    - name: Setup Pandoc
+      uses: r-lib/actions/setup-pandoc@v2
+
+    - name: Generate man page
+      run: pandoc -s -f markdown -t man -o "doc/${{ env.PROJECT_NAME }}.1" "doc/${{ env.PROJECT_NAME }}.1.md"
+
     - name: Create tarball
       id: package
       shell: bash
@@ -170,6 +190,9 @@ jobs:
 
         # Binary
         cp "${{ steps.strip.outputs.BIN_PATH }}" "$ARCHIVE_DIR"
+
+        # Man page
+        cp "doc/${{ env.PROJECT_NAME }}.1" "$ARCHIVE_DIR"
 
         # README, LICENSE and CHANGELOG files
         cp "README.md" "LICENSE-MIT" "LICENSE-APACHE" "CHANGELOG.md" "$ARCHIVE_DIR"
@@ -214,6 +237,10 @@ jobs:
 
         # Binary
         install -Dm755 "${{ steps.strip.outputs.BIN_PATH }}" "${DPKG_DIR}/usr/bin/${{ steps.strip.outputs.BIN_NAME }}"
+
+        # Man page
+        install -Dm644 "doc/${{ env.PROJECT_NAME }}.1" "${DPKG_DIR}/usr/share/man/man1/${{ env.PROJECT_NAME }}.1"
+        gzip -n --best "${DPKG_DIR}/usr/share/man/man1/${{ env.PROJECT_NAME }}.1"
 
         # README and LICENSE
         install -Dm644 "README.md" "${DPKG_DIR}/usr/share/doc/${DPKG_BASENAME}/README.md"
@@ -275,7 +302,7 @@ jobs:
         Architecture: ${DPKG_ARCH}
         Provides: ${{ env.PROJECT_NAME }}
         Conflicts: ${DPKG_CONFLICTS}
-        Description: command-line tool to generate, analyze, convert and manipulate colors
+        Description: colorized hex viewer for the terminal.
         EOF
 
         DPKG_PATH="${DPKG_STAGING}/${DPKG_NAME}"
