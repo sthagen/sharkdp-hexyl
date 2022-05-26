@@ -1,4 +1,4 @@
-% HEXYL(1) hexyl 0.9.0 | General Commands Manual
+% HEXYL(1) hexyl 0.10.0 | General Commands Manual
 %
 % 2022-03-23
 
@@ -120,6 +120,9 @@ Source repository:
 
 Print a given file:
 :   $ **hexyl small.png**
+
+Print and view a given file in the terminal pager:
+:   $ **hexyl big.png | less -r**
 
 Print the first 256 bytes of a given special file:
 :   $ **hexyl -n 256 /dev/urandom**

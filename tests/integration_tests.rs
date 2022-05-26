@@ -227,3 +227,47 @@ mod blocksize {
             .failure();
     }
 }
+
+mod display_settings {
+    use super::hexyl;
+
+    #[test]
+    fn plain() {
+        hexyl()
+            .arg("ascii")
+            .arg("--plain")
+            .assert()
+            .success()
+            .stdout("  30 31 32 33 34 35 36 37   38 39 61 62 63 64 65 0a  \n");
+    }
+
+    #[test]
+    fn no_chars() {
+        hexyl()
+            .arg("ascii")
+            .arg("--no-characters")
+            .arg("--color=never")
+            .assert()
+            .success()
+            .stdout(
+                "┌────────┬─────────────────────────┬─────────────────────────┐\n\
+                 │00000000│ 30 31 32 33 34 35 36 37 ┊ 38 39 61 62 63 64 65 0a │\n\
+                 └────────┴─────────────────────────┴─────────────────────────┘\n",
+            );
+    }
+
+    #[test]
+    fn no_position() {
+        hexyl()
+            .arg("ascii")
+            .arg("--no-position")
+            .arg("--color=never")
+            .assert()
+            .success()
+            .stdout(
+                "┌─────────────────────────┬─────────────────────────┬────────┬────────┐\n\
+                 │ 30 31 32 33 34 35 36 37 ┊ 38 39 61 62 63 64 65 0a │01234567┊89abcde_│\n\
+                 └─────────────────────────┴─────────────────────────┴────────┴────────┘\n",
+            );
+    }
+}

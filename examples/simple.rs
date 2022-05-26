@@ -12,9 +12,18 @@ fn main() {
     let mut handle = stdout.lock();
 
     let show_color = true;
+    let show_char_panel = true;
+    let show_position_panel = true;
     let use_squeezing = false;
     let border_style = BorderStyle::Unicode;
 
-    let mut printer = Printer::new(&mut handle, show_color, border_style, use_squeezing);
+    let mut printer = Printer::new(
+        &mut handle,
+        show_color,
+        show_char_panel,
+        show_position_panel,
+        border_style,
+        use_squeezing,
+    );
     printer.print_all(&input[..]).unwrap();
 }
