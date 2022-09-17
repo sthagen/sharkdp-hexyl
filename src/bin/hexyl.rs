@@ -4,7 +4,7 @@ extern crate clap;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::{self, prelude::*, SeekFrom};
-use std::num::NonZeroI64;
+use std::num::{NonZeroI64, NonZeroU16};
 
 use clap::{crate_name, crate_version, AppSettings, Arg, ColorChoice, Command};
 
@@ -15,6 +15,8 @@ use anyhow::{anyhow, Context, Error as AnyhowError};
 use const_format::formatcp;
 
 use thiserror::Error as ThisError;
+
+use terminal_size::terminal_size;
 
 use hexyl::{BorderStyle, Input, Printer};
 
@@ -149,6 +151,31 @@ fn run() -> Result<(), AnyhowError> {
                     A negative value is valid and calculates an offset relative to the \
                     end of the file.",
                 ),
+        )
+        .arg(
+            Arg::new("panels")
+                .long("panels")
+                .takes_value(true)
+                .value_name("N")
+                .help(
+                    "Sets the number of hex data panels to be displayed. \
+                    `--panels=auto` will display the maximum number of hex data panels \
+                    based on the current terminal width",
+                ),
+        )
+        .arg(
+            Arg::new("terminal_width")
+                .long("terminal-width")
+                .takes_value(true)
+                .value_name("N")
+                .conflicts_with("panels")
+                .help(
+                    "Sets the number of terminal columns to be displayed.\nSince the terminal \
+                    width may not be an evenly divisible by the width per hex data column, this \
+                    will use the greatest number of hex data panels that can fit in the requested \
+                    width but still leave some space to the right.\nCannot be used with other \
+                    width-setting options.",
+                ),
         );
 
     let matches = command.get_matches();
@@ -267,6 +294,44 @@ fn run() -> Result<(), AnyhowError> {
         .transpose()?
         .unwrap_or(0);
 
+    let max_panels_fn = |terminal_width: u16| {
+        let offset = if show_position_panel { 10 } else { 1 };
+        let col_width = if show_char_panel { 35 } else { 26 };
+        if (terminal_width - offset) / col_width < 1 {
+            1
+        } else {
+            (terminal_width - offset) / col_width
+        }
+    };
+
+    let panels = if matches.value_of("panels") == Some("auto") {
+        max_panels_fn(terminal_size().ok_or_else(|| anyhow!("not a TTY"))?.0 .0)
+    } else if let Some(panels) = matches
+        .value_of("panels")
+        .map(|s| {
+            s.parse::<NonZeroU16>().map(u16::from).context(anyhow!(
+                "failed to parse `--panels` arg {:?} as unsigned nonzero integer",
+                s
+            ))
+        })
+        .transpose()?
+    {
+        panels
+    } else if let Some(terminal_width) = matches
+        .value_of("terminal_width")
+        .map(|s| {
+            s.parse::<NonZeroU16>().map(u16::from).context(anyhow!(
+                "failed to parse `--terminal-width` arg {:?} as unsigned nonzero integer",
+                s
+            ))
+        })
+        .transpose()?
+    {
+        max_panels_fn(terminal_width)
+    } else {
+        2
+    };
+
     let stdout = io::stdout();
     let mut stdout_lock = stdout.lock();
 
@@ -277,6 +342,7 @@ fn run() -> Result<(), AnyhowError> {
         show_position_panel,
         border_style,
         squeeze,
+        panels,
     );
     printer.display_offset(skip_offset + display_offset);
     printer.print_all(&mut reader).map_err(|e| anyhow!(e))?;
