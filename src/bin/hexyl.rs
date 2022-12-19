@@ -9,9 +9,7 @@ use std::num::{NonZeroI64, NonZeroU64, NonZeroU8};
 use clap::builder::ArgPredicate;
 use clap::{crate_name, crate_version, Arg, ArgAction, ColorChoice, Command};
 
-use atty::Stream;
-
-use anyhow::{anyhow, Context, Error as AnyhowError};
+use anyhow::{anyhow, Context, Result};
 
 use const_format::formatcp;
 
@@ -19,11 +17,11 @@ use thiserror::Error as ThisError;
 
 use terminal_size::terminal_size;
 
-use hexyl::{BorderStyle, Input, PrinterBuilder};
+use hexyl::{Base, BorderStyle, Input, PrinterBuilder};
 
 const DEFAULT_BLOCK_SIZE: i64 = 512;
 
-fn run() -> Result<(), AnyhowError> {
+fn run() -> Result<()> {
     let command = Command::new(crate_name!())
         .color(ColorChoice::Auto)
         .max_term_width(90)
@@ -163,19 +161,34 @@ fn run() -> Result<(), AnyhowError> {
                 .help(
                     "Sets the number of hex data panels to be displayed. \
                     `--panels=auto` will display the maximum number of hex data panels \
-                    based on the current terminal width",
+                    based on the current terminal width. By default, hexyl will show \
+                    two panels, unless the terminal is not wide enough for that.",
                 ),
         )
         .arg(
-            Arg::new("group_bytes")
+            Arg::new("group_size")
                 .short('g')
-                .long("group-bytes")
+                .long("group-size")
+                .alias("groupsize")
                 .num_args(1)
                 .value_name("N")
                 .help(
-                    "Sets the number of octets per group to be displayed. \
-                    The possible options are 1, 2, 4, 8. The default is 1",
+                    "Number of bytes/octets that should be grouped together. \
+                    Possible group sizes are 1, 2, 4, 8. The default is 1. \
+                    '--groupsize can be used as an alias (xxd-compatibility).",
                 ),
+        )
+        .arg(
+            Arg::new("base")
+                .short('b')
+                .long("base")
+                .num_args(1)
+                .value_name("B")
+                .help(
+                    "Sets the base used for the bytes. The possible options are \
+                    binary, octal, decimal, and hexadecimal. The default base \
+                    is hexadecimal."
+                )
         )
         .arg(
             Arg::new("terminal_width")
@@ -256,7 +269,7 @@ fn run() -> Result<(), AnyhowError> {
         0
     };
 
-    let parse_byte_count = |s| -> Result<u64, AnyhowError> {
+    let parse_byte_count = |s| -> Result<u64> {
         Ok(parse_byte_offset(s, block_size)?
             .assume_forward_offset_from_start()?
             .into())
@@ -281,8 +294,10 @@ fn run() -> Result<(), AnyhowError> {
 
     let show_color = match matches.get_one::<String>("color").map(String::as_ref) {
         Some("never") => false,
-        Some("auto") => atty::is(Stream::Stdout),
-        _ => true,
+        Some("always") => true,
+        _ => supports_color::on(supports_color::Stream::Stdout)
+            .map(|level| level.has_basic)
+            .unwrap_or(false),
     };
 
     let border_style = match matches.get_one::<String>("border").map(String::as_ref) {
@@ -310,9 +325,13 @@ fn run() -> Result<(), AnyhowError> {
         .transpose()?
         .unwrap_or(0);
 
-    let max_panels_fn = |terminal_width: u64| {
+    let max_panels_fn = |terminal_width: u64, base_digits: u64, group_size: u64| {
         let offset = if show_position_panel { 10 } else { 1 };
-        let col_width = if show_char_panel { 35 } else { 26 };
+        let col_width = if show_char_panel {
+            ((8 / group_size) * (base_digits * group_size + 1)) + 2 + 8
+        } else {
+            ((8 / group_size) * (base_digits * group_size + 1)) + 2
+        };
         if (terminal_width - offset) / col_width < 1 {
             1
         } else {
@@ -320,8 +339,63 @@ fn run() -> Result<(), AnyhowError> {
         }
     };
 
+    let base = if let Some(base) = matches.get_one::<String>("base")
+    .map(|s| {
+        if let Ok(base_num) = s.parse::<u8>() {
+            match base_num {
+                2 => Ok(Base::Binary),
+                8 => Ok(Base::Octal),
+                10 => Ok(Base::Decimal),
+                16 => Ok(Base::Hexadecimal),
+                _ => Err(anyhow!("The number provided is not a valid base. Valid bases are 2, 8, 10, and 16.")),
+            }
+        } else {
+            match s.as_str() {
+                "b" | "bin" | "binary" => Ok(Base::Binary),
+                "o" | "oct" | "octal" => Ok(Base::Octal),
+                "d" | "dec" | "decimal" => Ok(Base::Decimal),
+                "x" | "hex" | "hexadecimal" => Ok(Base::Hexadecimal),
+                _ => Err(anyhow!("The base provided is not valid. Valid bases are \"b\", \"o\", \"d\", and \"x\"."))
+            }
+        }
+    }).transpose()? {
+        base
+    } else {
+        Base::Hexadecimal
+    };
+
+    let base_digits = match base {
+        Base::Binary => 8,
+        Base::Octal => 3,
+        Base::Decimal => 3,
+        Base::Hexadecimal => 2,
+    };
+
+    let group_size = if let Some(group_size) = matches
+        .get_one::<String>("group_size")
+        .map(|s| {
+            s.parse::<NonZeroU8>().map(u8::from).context(anyhow!(
+                "Failed to parse `--group-size`/`-g` argument {:?} as unsigned nonzero integer",
+                s
+            ))
+        })
+        .transpose()?
+    {
+        if (group_size <= 8) && ((group_size & (group_size - 1)) == 0) {
+            group_size
+        } else {
+            return Err(anyhow!(
+                "Possible sizes for the `--group-size`/`-g` option are 1, 2, 4 or 8. "
+            ));
+        }
+    } else {
+        1
+    };
+
+    let terminal_width = terminal_size().map(|s| s.0 .0 as u64).unwrap_or(80);
+
     let panels = if matches.get_one::<String>("panels").map(String::as_ref) == Some("auto") {
-        max_panels_fn(terminal_size().ok_or_else(|| anyhow!("not a TTY"))?.0 .0 as u64)
+        max_panels_fn(terminal_width, base_digits, group_size.into())
     } else if let Some(panels) = matches
         .get_one::<String>("panels")
         .map(|s| {
@@ -343,30 +417,12 @@ fn run() -> Result<(), AnyhowError> {
         })
         .transpose()?
     {
-        max_panels_fn(terminal_width)
+        max_panels_fn(terminal_width, base_digits, group_size.into())
     } else {
-        2
-    };
-
-    let group_bytes = if let Some(group_bytes) = matches
-        .get_one::<String>("group_bytes")
-        .map(|s| {
-            s.parse::<NonZeroU8>().map(u8::from).context(anyhow!(
-                "failed to parse `--group-bytes`/`-g` arg {:?} as unsigned nonzero integer",
-                s
-            ))
-        })
-        .transpose()?
-    {
-        if (group_bytes <= 8) && ((group_bytes & (group_bytes - 1)) == 0) {
-            group_bytes
-        } else {
-            return Err(anyhow!(
-                "Possible options for the `--group-bytes`/`-g` option are 1, 2, 4 or 8. "
-            ));
-        }
-    } else {
-        1
+        std::cmp::min(
+            2,
+            max_panels_fn(terminal_width, base_digits, group_size.into()),
+        )
     };
 
     let stdout = io::stdout();
@@ -379,7 +435,8 @@ fn run() -> Result<(), AnyhowError> {
         .with_border_style(border_style)
         .enable_squeezing(squeeze)
         .num_panels(panels)
-        .num_group_bytes(group_bytes)
+        .group_size(group_size)
+        .with_base(base)
         .build();
     printer.display_offset(skip_offset + display_offset);
     printer.print_all(&mut reader).map_err(|e| anyhow!(e))?;
@@ -391,7 +448,12 @@ fn main() {
     let result = run();
 
     if let Err(err) = result {
-        eprintln!("Error: {:?}", err);
+        if let Some(io_error) = err.downcast_ref::<io::Error>() {
+            if io_error.kind() == ::std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+        }
+        eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
 }
