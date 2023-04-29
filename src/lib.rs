@@ -21,12 +21,19 @@ const COLOR_ASCII_OTHER: &[u8] = colors::Green::ANSI_FG.as_bytes();
 const COLOR_NONASCII: &[u8] = colors::Yellow::ANSI_FG.as_bytes();
 const COLOR_RESET: &[u8] = colors::Default::ANSI_FG.as_bytes();
 
+#[derive(Copy, Clone)]
 pub enum ByteCategory {
     Null,
     AsciiPrintable,
     AsciiWhitespace,
     AsciiOther,
     NonAscii,
+}
+
+#[derive(Copy, Clone)]
+pub enum Endianness {
+    Little,
+    Big,
 }
 
 #[derive(PartialEq)]
@@ -159,6 +166,7 @@ pub struct PrinterBuilder<'a, Writer: Write> {
     panels: u64,
     group_size: u8,
     base: Base,
+    endianness: Endianness,
 }
 
 impl<'a, Writer: Write> PrinterBuilder<'a, Writer> {
@@ -173,6 +181,7 @@ impl<'a, Writer: Write> PrinterBuilder<'a, Writer> {
             panels: 2,
             group_size: 1,
             base: Base::Hexadecimal,
+            endianness: Endianness::Big,
         }
     }
 
@@ -216,6 +225,11 @@ impl<'a, Writer: Write> PrinterBuilder<'a, Writer> {
         self
     }
 
+    pub fn endianness(mut self, endianness: Endianness) -> Self {
+        self.endianness = endianness;
+        self
+    }
+
     pub fn build(self) -> Printer<'a, Writer> {
         Printer::new(
             self.writer,
@@ -227,6 +241,7 @@ impl<'a, Writer: Write> PrinterBuilder<'a, Writer> {
             self.panels,
             self.group_size,
             self.base,
+            self.endianness,
         )
     }
 }
@@ -254,6 +269,8 @@ pub struct Printer<'a, Writer: Write> {
     group_size: u8,
     /// The number of digits used to write the base.
     base_digits: u8,
+    /// Whether to show groups in little or big endian format.
+    endianness: Endianness,
 }
 
 impl<'a, Writer: Write> Printer<'a, Writer> {
@@ -267,6 +284,7 @@ impl<'a, Writer: Write> Printer<'a, Writer> {
         panels: u64,
         group_size: u8,
         base: Base,
+        endianness: Endianness,
     ) -> Printer<'a, Writer> {
         Printer {
             idx: 0,
@@ -304,6 +322,7 @@ impl<'a, Writer: Write> Printer<'a, Writer> {
                 Base::Decimal => 3,
                 Base::Hexadecimal => 2,
             },
+            endianness,
         }
     }
 
@@ -523,8 +542,26 @@ impl<'a, Writer: Write> Printer<'a, Writer> {
         Ok(())
     }
 
+    fn reorder_buffer_to_little_endian(&self, buf: &mut Vec<u8>) {
+        let n = buf.len();
+        let group_sz = self.group_size as usize;
+
+        for idx in (0..n).step_by(group_sz) {
+            let remaining = n - idx;
+            let total = remaining.min(group_sz);
+
+            buf[idx..idx + total].reverse();
+        }
+    }
+
     pub fn print_bytes(&mut self) -> io::Result<()> {
-        for (i, &b) in self.line_buf.clone().iter().enumerate() {
+        let mut buf = self.line_buf.clone();
+
+        if matches!(self.endianness, Endianness::Little) {
+            self.reorder_buffer_to_little_endian(&mut buf);
+        };
+
+        for (i, &b) in buf.iter().enumerate() {
             self.print_byte(i, b)?;
         }
         Ok(())
@@ -682,6 +719,7 @@ mod tests {
             2,
             1,
             Base::Hexadecimal,
+            Endianness::Big,
         );
 
         printer.print_all(input).unwrap();
@@ -736,6 +774,7 @@ mod tests {
             2,
             1,
             Base::Hexadecimal,
+            Endianness::Big,
         );
         printer.display_offset(0xdeadbeef);
 
@@ -769,6 +808,7 @@ mod tests {
             4,
             1,
             Base::Hexadecimal,
+            Endianness::Big,
         );
 
         printer.print_all(input).unwrap();
@@ -828,6 +868,7 @@ mod tests {
             3,
             1,
             Base::Hexadecimal,
+            Endianness::Big,
         );
 
         printer.print_all(input).unwrap();
