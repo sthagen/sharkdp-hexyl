@@ -68,7 +68,7 @@ sudo dnf install hexyl
 
 ### On Arch Linux
 
-You can install `hexyl` from [the official package repository](https://www.archlinux.org/packages/community/x86_64/hexyl/):
+You can install `hexyl` from [the official package repository](https://archlinux.org/packages/extra/x86_64/hexyl/):
 
 ```
 pacman -S hexyl
@@ -108,6 +108,12 @@ sudo port install hexyl
 
 ```
 pkg install hexyl
+```
+
+### On OpenBSD
+
+```
+doas pkg_add hexyl
 ```
 
 ### on Termux
