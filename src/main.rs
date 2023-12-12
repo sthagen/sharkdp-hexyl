@@ -17,7 +17,7 @@ use thiserror::Error as ThisError;
 
 use terminal_size::terminal_size;
 
-use hexyl::{Base, BorderStyle, Endianness, Input, PrinterBuilder};
+use hexyl::{Base, BorderStyle, CharacterTable, Endianness, Input, PrinterBuilder};
 
 #[cfg(test)]
 mod tests;
@@ -105,12 +105,13 @@ fn run() -> Result<()> {
                 .long("color")
                 .num_args(1)
                 .value_name("WHEN")
-                .value_parser(["always", "auto", "never"])
+                .value_parser(["always", "auto", "never", "force"])
                 .default_value_if("plain", ArgPredicate::IsPresent, Some("never"))
                 .default_value("always")
                 .help(
-                    "When to use colors. The auto-mode only displays colors if the output \
-                     goes to an interactive terminal",
+                    "When to use colors. The 'auto' mode only displays colors if the output \
+                     goes to an interactive terminal. 'force' can be used to override the \
+                     NO_COLOR environment variable.",
                 ),
         )
         .arg(
@@ -142,6 +143,21 @@ fn run() -> Result<()> {
                 .overrides_with("no_chars")
                 .action(ArgAction::SetTrue)
                 .help("Show the character panel on the right. This is the default, unless --no-characters has been specified."),
+        )
+        .arg(
+            Arg::new("character-table")
+                .long("character-table")
+                .value_name("FORMAT")
+                .value_parser(["default", "ascii", "codepage-437"])
+                .default_value("default")
+                .help(
+                    "Defines how bytes are mapped to characters:\n  \
+                    \"default\": show printable ASCII characters as-is, '⋄' for NULL bytes, \
+                    ' ' for space, '_' for other ASCII whitespace, \
+                    '•' for other ASCII characters, and '×' for non-ASCII bytes.\n  \
+                    \"ascii\": show printable ASCII as-is, ' ' for space, '.' for everything else.\n  \
+                    \"codepage-437\": uses code page 437 (for non-ASCII bytes).\n"
+                ),
         )
         .arg(
             Arg::new("no_position")
@@ -326,12 +342,20 @@ fn run() -> Result<()> {
         reader.into_inner()
     };
 
+    let no_color = std::env::var_os("NO_COLOR").is_some();
     let show_color = match matches.get_one::<String>("color").map(String::as_ref) {
         Some("never") => false,
-        Some("always") => true,
-        _ => supports_color::on(supports_color::Stream::Stdout)
-            .map(|level| level.has_basic)
-            .unwrap_or(false),
+        Some("always") => !no_color,
+        Some("force") => true,
+        _ => {
+            if no_color {
+                false
+            } else {
+                supports_color::on(supports_color::Stream::Stdout)
+                    .map(|level| level.has_basic)
+                    .unwrap_or(false)
+            }
+        }
     };
 
     let border_style = match matches.get_one::<String>("border").map(String::as_ref) {
@@ -469,6 +493,18 @@ fn run() -> Result<()> {
         ("big", _) => Endianness::Big,
         _ => unreachable!(),
     };
+
+    let character_table = match matches
+        .get_one::<String>("character-table")
+        .unwrap()
+        .as_ref()
+    {
+        "default" => CharacterTable::Default,
+        "ascii" => CharacterTable::Ascii,
+        "codepage-437" => CharacterTable::CP437,
+        _ => unreachable!(),
+    };
+
     let stdout = io::stdout();
     let mut stdout_lock = BufWriter::new(stdout.lock());
 
@@ -482,6 +518,7 @@ fn run() -> Result<()> {
         .group_size(group_size)
         .with_base(base)
         .endianness(endianness)
+        .character_table(character_table)
         .build();
     printer.display_offset(skip_offset + display_offset);
     printer.print_all(&mut reader).map_err(|e| anyhow!(e))?;

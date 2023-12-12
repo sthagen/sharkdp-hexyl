@@ -4,7 +4,7 @@
 [![](https://img.shields.io/crates/l/hexyl.svg?colorB=22ba4c)](https://crates.io/crates/hexyl)
 ![](https://img.shields.io/crates/v/hexyl.svg?colorB=00aa88)
 
-`hexyl` is a simple hex viewer for the terminal. It uses a colored output to distinguish different categories
+`hexyl` is a hex viewer for the terminal. It uses a colored output to distinguish different categories
 of bytes (NULL bytes, printable ASCII characters, ASCII whitespace characters, other ASCII characters and non-ASCII).
 
 ## Preview
@@ -45,7 +45,7 @@ If you use an older version of Ubuntu, you can download
 the latest `.deb` package from the release page and install it via:
 
 ``` bash
-sudo dpkg -i hexyl_0.13.1_amd64.deb  # adapt version number and architecture
+sudo dpkg -i hexyl_0.14.0_amd64.deb  # adapt version number and architecture
 ```
 
 ### On Debian
