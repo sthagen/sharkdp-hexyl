@@ -4,7 +4,8 @@ use std::num::{NonZeroI64, NonZeroU64};
 use std::path::PathBuf;
 
 use clap::builder::ArgPredicate;
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser, ValueEnum};
+use clap_complete::aot::{generate, Shell};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -14,7 +15,7 @@ use thiserror::Error as ThisError;
 
 use terminal_size::terminal_size;
 
-use hexyl::{Base, BorderStyle, CharacterTable, Endianness, Input, PrinterBuilder};
+use hexyl::{Base, BorderStyle, CharacterTable, ColorScheme, Endianness, Input, PrinterBuilder};
 
 use hexyl::{
     COLOR_ASCII_OTHER, COLOR_ASCII_PRINTABLE, COLOR_ASCII_WHITESPACE, COLOR_NONASCII, COLOR_NULL,
@@ -129,6 +130,10 @@ struct Opt {
     #[arg(long, value_enum, default_value_t, value_name("FORMAT"))]
     character_table: CharacterTable,
 
+    /// Defines the color scheme for the characters.
+    #[arg(long, value_enum, default_value_t, value_name("FORMAT"))]
+    color_scheme: ColorScheme,
+
     /// Whether to display the position panel on the left.
     #[arg(short('P'), long)]
     no_position: bool,
@@ -188,6 +193,10 @@ struct Opt {
     /// Print a table showing how different types of bytes are colored.
     #[arg(long)]
     print_color_table: bool,
+
+    /// Show shell completion for a certain shell
+    #[arg(long, value_name("SHELL"))]
+    completion: Option<Shell>,
 }
 
 #[derive(Clone, Debug, Default, ValueEnum)]
@@ -242,6 +251,13 @@ fn run() -> Result<()> {
 
     if opt.print_color_table {
         return print_color_table().map_err(|e| anyhow!(e));
+    }
+
+    if let Some(sh) = opt.completion {
+        let mut cmd = Opt::command();
+        let name = cmd.get_name().to_string();
+        generate(sh, &mut cmd, name, &mut io::stdout());
+        return Ok(());
     }
 
     let stdin = io::stdin();
@@ -429,6 +445,8 @@ fn run() -> Result<()> {
 
     let character_table = opt.character_table;
 
+    let color_scheme = opt.color_scheme;
+
     let mut stdout = BufWriter::new(io::stdout().lock());
 
     let mut printer = PrinterBuilder::new(&mut stdout)
@@ -442,6 +460,7 @@ fn run() -> Result<()> {
         .with_base(base)
         .endianness(endianness)
         .character_table(character_table)
+        .color_scheme(color_scheme)
         .build();
     printer.display_offset(skip_offset + display_offset);
     printer.print_all(&mut reader).map_err(|e| anyhow!(e))?;
